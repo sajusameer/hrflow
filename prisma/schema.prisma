@@ -1,0 +1,102 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== ENUMS ====================
+
+enum UserRole {
+  ADMIN
+  HR_MANAGER
+  EMPLOYEE
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  INACTIVE
+  ON_LEAVE
+  TERMINATED
+}
+
+// ==================== USER ====================
+
+model User {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(EMPLOYEE)
+
+  employee Employee?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ==================== EMPLOYEE ====================
+
+model Employee {
+  id               String           @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String           @unique @db.ObjectId
+  fullName         String
+  email            String
+  phone            String?
+  position         String
+  employmentStatus EmploymentStatus @default(ACTIVE)
+  dateJoined       DateTime
+  imageUrl         String?
+
+  user User @relation(fields: [userId], references: [id])
+
+  // Employee's department
+  departmentId String?     @db.ObjectId
+  department   Department? @relation("EmployeeDepartment", fields: [departmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  // Departments where this employee is the head
+  headedDepartments Department[] @relation("DepartmentHead")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([fullName])
+  @@index([email])
+  @@index([departmentId])
+  @@index([employmentStatus])
+}
+
+// ==================== DEPARTMENT ====================
+
+model Department {
+  id          String  @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  description String?
+
+  // Parent department (Self-relation)
+  parentId String?      @db.ObjectId
+  parent   Department?  @relation("DepartmentHierarchy", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children Department[] @relation("DepartmentHierarchy")
+
+  // Department head (Cross-reference cycle)
+  headId String?   @db.ObjectId
+  head   Employee? @relation("DepartmentHead", fields: [headId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  // Employees in this department
+  employees Employee[] @relation("EmployeeDepartment")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@index([parentId])
+  @@index([headId])
+}
