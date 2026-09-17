@@ -50,16 +50,19 @@ export async function GET(request: NextRequest) {
                 {
                   fullName: {
                     contains: search,
+                    mode: "insensitive",
                   },
                 },
                 {
                   email: {
                     contains: search,
+                    mode: "insensitive",
                   },
                 },
                 {
                   position: {
                     contains: search,
+                    mode: "insensitive",
                   },
                 },
               ],
@@ -88,6 +91,12 @@ export async function GET(request: NextRequest) {
           select: {
             id: true,
             name: true,
+          },
+        },
+        user: {
+          select: {
+            id: true,
+            role: true,
           },
         },
       },
@@ -168,6 +177,12 @@ export async function POST(request: NextRequest) {
       dateJoined,
     } = result.data;
 
+    // Optional dynamic role (defaults to EMPLOYEE)
+    const targetRole =
+      session.role === "ADMIN" && ["EMPLOYEE", "HR_MANAGER", "ADMIN"].includes(body.role)
+        ? body.role
+        : "EMPLOYEE";
+
     const normalizedEmail = email.toLowerCase().trim();
 
     const existingUser = await prisma.user.findUnique({
@@ -210,7 +225,7 @@ export async function POST(request: NextRequest) {
       data: {
         email: normalizedEmail,
         passwordHash,
-        role: "EMPLOYEE",
+        role: targetRole,
 
         employee: {
           create: {

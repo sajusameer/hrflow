@@ -1,429 +1,476 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  ArrowUpRight,
+  LogIn,
+  LogOut,
   CalendarCheck,
   ClipboardList,
   Users,
   Building2,
   Clock3,
-  MessageSquare,
-  UserPlus,
-  LogIn,
-  LogOut,
+  CheckCircle2,
+  AlertCircle,
+  PlusCircle,
 } from "lucide-react";
-
 import AppShell from "@/components/layout/app-shell";
 
-interface DashboardData {
-  employee: {
+interface UserData {
+  id: string;
+  role: "EMPLOYEE" | "HR_MANAGER" | "ADMIN";
+  employee?: {
     id: string;
     fullName: string;
     position: string;
   };
-  myTodayAttendance: {
-    id: string;
-    clockIn: string;
-    clockOut: string | null;
-    status: "PRESENT" | "LATE" | "HALF_DAY";
-  } | null;
-  // Admin / HR stats
-  totalEmployees?: number;
-  totalDepartments?: number;
-  presentToday?: number;
-  absentToday?: number;
-  notClockedOut?: number;
-  pendingLeaves?: number;
-  recentLeaves?: Array<{
+}
+
+interface AttendanceToday {
+  clockIn: string | null;
+  clockOut: string | null;
+  status: "PRESENT" | "LATE" | "HALF_DAY" | "ABSENT";
+}
+
+interface LeaveSummary {
+  pendingCount: number;
+  totalCount: number;
+  recentLeaves: Array<{
     id: string;
     leaveType: string;
-    employee: { fullName: string; position: string };
+    startDate: string;
+    endDate: string;
+    status: "PENDING" | "APPROVED" | "REJECTED";
   }>;
-  // Employee stats
-  myPendingLeaves?: number;
-  myTotalLeaves?: number;
 }
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [role, setRole] = useState<string>("");
-  const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState(false);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [, startTransition] = useTransition();
 
-  const fetchStats = async () => {
+  const [user, setUser] = useState<UserData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Employee Specific States
+  const [todayAttendance, setTodayAttendance] = useState<AttendanceToday | null>(null);
+  const [leaveSummary, setLeaveSummary] = useState<LeaveSummary>({
+    pendingCount: 0,
+    totalCount: 0,
+    recentLeaves: [],
+  });
+
+  // Admin Specific States
+  const [adminStats, setAdminStats] = useState({
+    totalEmployees: 0,
+    presentToday: 0,
+    pendingLeaves: 0,
+    departmentsCount: 0,
+  });
+
+  const [clockLoading, setClockLoading] = useState(false);
+
+  const fetchDashboardData = async () => {
     try {
-      const res = await fetch("/api/dashboard/stats");
-      const resData = await res.json();
-      if (res.ok && resData.success) {
-        setData(resData.data);
-        setRole(resData.role);
+      setLoading(true);
+      const authRes = await fetch("/api/auth/me");
+      if (!authRes.ok) {
+        startTransition(() => router.push("/login"));
+        return;
+      }
+      const authData = await authRes.json();
+      const currentUser = authData.user;
+      setUser(currentUser);
+
+      const empId = currentUser?.employee?.id;
+
+      if (currentUser.role === "EMPLOYEE") {
+        // Fetch Attendance for today
+        if (empId) {
+          const attRes = await fetch(`/api/attendance?employeeId=${empId}`);
+          const attData = await attRes.json();
+          if (attData.success && Array.isArray(attData.data)) {
+            const todayStr = new Date().toISOString().split("T")[0];
+            const foundToday = attData.data.find((r: any) =>
+              r.date.startsWith(todayStr)
+            );
+            if (foundToday) {
+              setTodayAttendance({
+                clockIn: foundToday.clockIn,
+                clockOut: foundToday.clockOut,
+                status: foundToday.status,
+              });
+            } else {
+              setTodayAttendance(null);
+            }
+          }
+
+          // Fetch Leaves for employee
+          const leaveRes = await fetch(`/api/leave?employeeId=${empId}`);
+          const leaveData = await leaveRes.json();
+          if (leaveData.success && Array.isArray(leaveData.data)) {
+            const leaves = leaveData.data;
+            setLeaveSummary({
+              pendingCount: leaves.filter((l: any) => l.status === "PENDING").length,
+              totalCount: leaves.length,
+              recentLeaves: leaves.slice(0, 4),
+            });
+          }
+        }
       } else {
-        router.push("/login");
+        // Admin / HR Manager Overview
+        const [empRes, attRes, leaveRes, deptRes] = await Promise.all([
+          fetch("/api/employees"),
+          fetch("/api/attendance"),
+          fetch("/api/leave"),
+          fetch("/api/departments"),
+        ]);
+
+        const emps = await empRes.json();
+        const atts = await attRes.json();
+        const leaves = await leaveRes.json();
+        const depts = await deptRes.json();
+
+        const todayStr = new Date().toISOString().split("T")[0];
+        const presentCount = (atts.data || []).filter((r: any) =>
+          r.date.startsWith(todayStr)
+        ).length;
+
+        const pendingLeaves = (leaves.data || []).filter(
+          (l: any) => l.status === "PENDING"
+        ).length;
+
+        setAdminStats({
+          totalEmployees: (emps.employees || emps.data || []).length,
+          presentToday: presentCount,
+          pendingLeaves: pendingLeaves,
+          departmentsCount: (depts.departments || []).length,
+        });
       }
     } catch (err) {
-      console.error("Dashboard fetch error:", err);
+      console.error("Dashboard loading error:", err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchStats();
+    fetchDashboardData();
   }, []);
 
-  const handleClockIn = async () => {
-    if (!data?.employee.id) return;
-    setActionLoading(true);
-    setActionMessage(null);
+  const handleClockToggle = async () => {
+    if (!user?.employee?.id) return;
+    setClockLoading(true);
     try {
-      const res = await fetch("/api/attendance", {
+      const isClockingOut = todayAttendance?.clockIn && !todayAttendance?.clockOut;
+      const endpoint = isClockingOut ? "/api/attendance/clock-out" : "/api/attendance/clock-in";
+
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ employeeId: data.employee.id }),
+        body: JSON.stringify({ employeeId: user.employee.id }),
       });
-      const result = await res.json();
-      setActionMessage(result.message);
-      await fetchStats();
-    } catch {
-      setActionMessage("Failed to clock in");
+
+      if (res.ok) {
+        await fetchDashboardData();
+      }
+    } catch (err) {
+      console.error("Clock action error:", err);
     } finally {
-      setActionLoading(false);
+      setClockLoading(false);
     }
   };
 
-  const handleClockOut = async () => {
-    if (!data?.employee.id) return;
-    setActionLoading(true);
-    setActionMessage(null);
-    try {
-      const res = await fetch("/api/attendance", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ employeeId: data.employee.id }),
-      });
-      const result = await res.json();
-      setActionMessage(result.message);
-      await fetchStats();
-    } catch {
-      setActionMessage("Failed to clock out");
-    } finally {
-      setActionLoading(false);
-    }
+  const currentDate = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(new Date());
+
+  const formatTime = (timeStr: string | null) => {
+    if (!timeStr) return "--:--";
+    return new Date(timeStr).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   };
 
   if (loading) {
     return (
       <AppShell>
-        <div className="flex h-96 items-center justify-center">
-          <div className="text-sm font-medium text-slate-500">Loading workspace dashboard...</div>
+        <div className="flex min-h-[70vh] items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent" />
         </div>
       </AppShell>
     );
   }
 
-  const attendance = data?.myTodayAttendance;
-  const isEmployeeOnly = role === "EMPLOYEE";
-
-  // Calculations for attendance rate
-  const totalEmp = data?.totalEmployees || 0;
-  const present = data?.presentToday || 0;
-  const rate = totalEmp > 0 ? Math.round((present / totalEmp) * 100) : 0;
-
-  const stats = isEmployeeOnly
-    ? [
-        {
-          label: "Attendance Status",
-          value: attendance ? attendance.status : "Not Clocked In",
-          change: attendance?.clockOut ? "Shift ended" : attendance ? "In progress" : "Pending",
-          description: "Today's shift record",
-          icon: Clock3,
-        },
-        {
-          label: "Pending Leaves",
-          value: String(data?.myPendingLeaves ?? 0).padStart(2, "0"),
-          change: "Under review",
-          description: "Awaiting approval",
-          icon: ClipboardList,
-        },
-        {
-          label: "Total Leaves",
-          value: String(data?.myTotalLeaves ?? 0).padStart(2, "0"),
-          change: "History",
-          description: "Total submissions",
-          icon: CalendarCheck,
-        },
-      ]
-    : [
-        {
-          label: "Total Employees",
-          value: String(data?.totalEmployees ?? 0).padStart(2, "0"),
-          change: "Active",
-          description: "in organization",
-          icon: Users,
-        },
-        {
-          label: "Present Today",
-          value: String(data?.presentToday ?? 0).padStart(2, "0"),
-          change: `${rate}%`,
-          description: "attendance rate",
-          icon: CalendarCheck,
-        },
-        {
-          label: "Pending Leave",
-          value: String(data?.pendingLeaves ?? 0).padStart(2, "0"),
-          change: "Needs review",
-          description: "leave requests",
-          icon: ClipboardList,
-        },
-        {
-          label: "Departments",
-          value: String(data?.totalDepartments ?? 0).padStart(2, "0"),
-          change: "Active",
-          description: "hierarchy units",
-          icon: Building2,
-        },
-      ];
+  const isEmployee = user?.role === "EMPLOYEE";
+  const hasClockedIn = Boolean(todayAttendance?.clockIn);
+  const hasClockedOut = Boolean(todayAttendance?.clockOut);
 
   return (
     <AppShell>
       <div className="min-h-screen px-4 py-6 md:px-6 lg:px-8">
         <div className="mx-auto max-w-7xl space-y-6">
-          {/* Page heading */}
-          <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+          {/* Welcome Header */}
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm font-medium text-emerald-600">
-                {new Date().toLocaleDateString("en-US", {
-                  weekday: "long",
-                  year: "numeric",
-                  month: "long",
-                  day: "numeric",
-                })}
+              <p className="text-xs font-semibold uppercase tracking-wider text-emerald-600">
+                {currentDate}
               </p>
-
               <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 md:text-3xl">
-                Welcome back, {data?.employee.fullName}
+                Welcome back, {user?.employee?.fullName || "Colleague"}
               </h1>
-
-              <p className="mt-1 text-sm text-slate-500">
-                {data?.employee.position} &bull; <span className="font-semibold text-emerald-700">{role}</span>
+              <p className="text-xs font-medium text-slate-500">
+                {user?.employee?.position} &bull;{" "}
+                <span className="font-semibold text-emerald-600">{user?.role}</span>
               </p>
             </div>
 
-            {/* Shift Clock-In / Clock-Out Interaction */}
+            {/* Top Quick Actions */}
             <div className="flex items-center gap-3">
-              {!attendance ? (
+              {isEmployee ? (
                 <button
                   type="button"
-                  onClick={handleClockIn}
-                  disabled={actionLoading}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
+                  disabled={clockLoading || hasClockedOut}
+                  onClick={handleClockToggle}
+                  className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition disabled:opacity-50 ${
+                    hasClockedOut
+                      ? "bg-slate-400"
+                      : hasClockedIn
+                      ? "bg-rose-600 hover:bg-rose-700"
+                      : "bg-emerald-600 hover:bg-emerald-700"
+                  }`}
                 >
-                  <LogIn size={17} />
-                  {actionLoading ? "Processing..." : "Clock In"}
-                </button>
-              ) : !attendance.clockOut ? (
-                <button
-                  type="button"
-                  onClick={handleClockOut}
-                  disabled={actionLoading}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-700 disabled:opacity-50"
-                >
-                  <LogOut size={17} />
-                  {actionLoading ? "Processing..." : "Clock Out"}
+                  {hasClockedIn && !hasClockedOut ? (
+                    <>
+                      <LogOut size={18} />
+                      {clockLoading ? "Clocking Out..." : "Clock Out"}
+                    </>
+                  ) : (
+                    <>
+                      <LogIn size={18} />
+                      {hasClockedOut
+                        ? "Shift Completed"
+                        : clockLoading
+                        ? "Clocking In..."
+                        : "Clock In"}
+                    </>
+                  )}
                 </button>
               ) : (
-                <span className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-600">
-                  <Clock3 size={16} /> Completed for Today
-                </span>
-              )}
-
-              {!isEmployeeOnly && (
-                <button
-                  type="button"
-                  onClick={() => router.push("/employees")}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                <Link
+                  href="/employees"
+                  className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
                 >
-                  <UserPlus size={17} />
+                  <Users size={18} />
                   Manage Employees
-                </button>
+                </Link>
               )}
             </div>
           </div>
 
-          {actionMessage && (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
-              {actionMessage}
+          {/* Metrics Grid */}
+          {isEmployee ? (
+            <div className="grid gap-4 sm:grid-cols-3">
+              {/* Card 1: Attendance Today */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                    <Clock3 size={20} />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase text-slate-400">Attendance Status</p>
+                    <p className="text-lg font-bold text-slate-900">
+                      {hasClockedOut
+                        ? "Shift Completed"
+                        : hasClockedIn
+                        ? "Clocked In"
+                        : "Not Clocked In"}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 2: Pending Leaves */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+                    <ClipboardList size={20} />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase text-slate-400">Pending Leaves</p>
+                    <p className="text-lg font-bold text-slate-900">
+                      {leaveSummary.pendingCount}{" "}
+                      <span className="text-xs font-normal text-slate-400">awaiting</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 3: Total Leaves Applied */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                    <CalendarCheck size={20} />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase text-slate-400">Total Leaves</p>
+                    <p className="text-lg font-bold text-slate-900">
+                      {leaveSummary.totalCount}{" "}
+                      <span className="text-xs font-normal text-slate-400">records</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Admin & HR Manager Metric Grid */
+            <div className="grid gap-4 sm:grid-cols-4">
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-xs font-semibold uppercase text-slate-400">Total Workforce</p>
+                <p className="mt-1 text-2xl font-bold text-slate-900">{adminStats.totalEmployees}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-xs font-semibold uppercase text-slate-400">Present Today</p>
+                <p className="mt-1 text-2xl font-bold text-emerald-600">{adminStats.presentToday}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-xs font-semibold uppercase text-slate-400">Pending Leaves</p>
+                <p className="mt-1 text-2xl font-bold text-amber-600">{adminStats.pendingLeaves}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-xs font-semibold uppercase text-slate-400">Departments</p>
+                <p className="mt-1 text-2xl font-bold text-blue-600">{adminStats.departmentsCount}</p>
+              </div>
             </div>
           )}
 
-          {/* Statistics Grid */}
-          <section className={`grid gap-4 sm:grid-cols-2 ${isEmployeeOnly ? "xl:grid-cols-3" : "xl:grid-cols-4"}`}>
-            {stats.map((stat) => {
-              const Icon = stat.icon;
+          {/* Lower Section */}
+          <div className="grid gap-6 md:grid-cols-2">
+            {/* Box 1: Today's Shift Logs */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="mb-4 flex items-center justify-between border-b border-slate-100 pb-3">
+                <h3 className="font-semibold text-slate-900">Today&apos;s Attendance Record</h3>
+                <Clock3 size={18} className="text-slate-400" />
+              </div>
 
-              return (
-                <div
-                  key={stat.label}
-                  className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
-                      <Icon size={21} />
-                    </div>
-
-                    <ArrowUpRight size={18} className="text-slate-300" />
-                  </div>
-
-                  <p className="mt-5 text-sm font-medium text-slate-500">{stat.label}</p>
-
-                  <div className="mt-2 flex items-end gap-2">
-                    <h2 className="text-3xl font-bold tracking-tight text-slate-900">
-                      {stat.value}
-                    </h2>
-
-                    <span className="mb-1 text-xs font-semibold text-emerald-600">
-                      {stat.change}
-                    </span>
-                  </div>
-
-                  <p className="mt-1 text-xs text-slate-400">{stat.description}</p>
-                </div>
-              );
-            })}
-          </section>
-
-          {/* Detailed Content (Attendance & Leaves) */}
-          <section className="grid gap-6 xl:grid-cols-3">
-            {/* Attendance Overview Card */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
-              <div className="flex items-center justify-between">
+              <div className="grid grid-cols-3 gap-4 rounded-xl bg-slate-50 p-4 text-center">
                 <div>
-                  <h2 className="font-semibold text-slate-900">Attendance Overview</h2>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {isEmployeeOnly ? "Your attendance details for today" : "Today's employee attendance summary"}
+                  <p className="text-xs text-slate-400">CLOCK IN</p>
+                  <p className="mt-1 text-sm font-bold text-slate-800">
+                    {formatTime(todayAttendance?.clockIn ?? null)}
                   </p>
                 </div>
-
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
-                  <Clock3 size={20} />
+                <div>
+                  <p className="text-xs text-slate-400">CLOCK OUT</p>
+                  <p className="mt-1 text-sm font-bold text-slate-800">
+                    {formatTime(todayAttendance?.clockOut ?? null)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-400">STATUS</p>
+                  <span
+                    className={`mt-1 inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                      todayAttendance?.status === "PRESENT"
+                        ? "bg-emerald-100 text-emerald-700"
+                        : todayAttendance?.status === "LATE"
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-slate-200 text-slate-600"
+                    }`}
+                  >
+                    {todayAttendance?.status || (hasClockedIn ? "PRESENT" : "ABSENT")}
+                  </span>
                 </div>
               </div>
 
-              {!isEmployeeOnly ? (
-                <>
-                  <div className="mt-6 grid gap-4 sm:grid-cols-3">
-                    <div className="rounded-xl bg-emerald-50 p-4">
-                      <p className="text-sm text-emerald-700">Present</p>
-                      <p className="mt-2 text-2xl font-bold text-emerald-900">
-                        {String(data?.presentToday ?? 0).padStart(2, "0")}
-                      </p>
-                      <p className="mt-1 text-xs text-emerald-700">Employees checked in</p>
-                    </div>
-
-                    <div className="rounded-xl bg-amber-50 p-4">
-                      <p className="text-sm text-amber-700">Pending Out</p>
-                      <p className="mt-2 text-2xl font-bold text-amber-900">
-                        {String(data?.notClockedOut ?? 0).padStart(2, "0")}
-                      </p>
-                      <p className="mt-1 text-xs text-amber-700">Not clocked out yet</p>
-                    </div>
-
-                    <div className="rounded-xl bg-slate-100 p-4">
-                      <p className="text-sm text-slate-600">Absent</p>
-                      <p className="mt-2 text-2xl font-bold text-slate-900">
-                        {String(data?.absentToday ?? 0).padStart(2, "0")}
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">Not checked in today</p>
-                    </div>
-                  </div>
-
-                  <div className="mt-6">
-                    <div className="mb-2 flex items-center justify-between text-sm">
-                      <span className="font-medium text-slate-600">Organization attendance rate</span>
-                      <span className="font-semibold text-slate-900">{rate}%</span>
-                    </div>
-
-                    <div className="h-3 overflow-hidden rounded-full bg-slate-100">
-                      <div
-                        className="h-full rounded-full bg-emerald-600 transition-all duration-500"
-                        style={{ width: `${rate}%` }}
-                      />
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="mt-6 space-y-4">
-                  <div className="flex items-center justify-between rounded-xl bg-slate-50 p-4">
-                    <div>
-                      <p className="text-xs font-semibold uppercase text-slate-400">Clock In Time</p>
-                      <p className="mt-1 text-base font-medium text-slate-800">
-                        {attendance?.clockIn ? new Date(attendance.clockIn).toLocaleTimeString() : "--:--"}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase text-slate-400">Clock Out Time</p>
-                      <p className="mt-1 text-base font-medium text-slate-800">
-                        {attendance?.clockOut ? new Date(attendance.clockOut).toLocaleTimeString() : "--:--"}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase text-slate-400">Status</p>
-                      <span className="mt-1 inline-block rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800">
-                        {attendance ? attendance.status : "ABSENT"}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
+              <div className="mt-5 text-right">
+                <Link
+                  href="/attendance"
+                  className="text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+                >
+                  View full attendance logs &rarr;
+                </Link>
+              </div>
             </div>
 
-            {/* Pending Leave Card */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="font-semibold text-slate-900">Leave Workflow</h2>
-                  <p className="mt-1 text-sm text-slate-500">Requests awaiting review</p>
-                </div>
-
-                <ClipboardList size={20} className="text-amber-600" />
-              </div>
-
-              <div className="mt-6 space-y-4">
-                {data?.recentLeaves && data.recentLeaves.length > 0 ? (
-                  data.recentLeaves.map((leave) => (
-                    <div key={leave.id} className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3 last:border-0 last:pb-0">
-                      <div className="flex min-w-0 items-center gap-3">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-600">
-                          {leave.employee.fullName.slice(0, 2).toUpperCase()}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-slate-800">{leave.employee.fullName}</p>
-                          <p className="text-xs text-slate-400">{leave.employee.position}</p>
-                        </div>
-                      </div>
-                      <span className="shrink-0 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
-                        {leave.leaveType}
-                      </span>
-                    </div>
-                  ))
-                ) : (
-                  <p className="py-6 text-center text-sm text-slate-400">No pending leave requests</p>
+            {/* Box 2: Leave Summary & Quick Action */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="mb-4 flex items-center justify-between border-b border-slate-100 pb-3">
+                <h3 className="font-semibold text-slate-900">
+                  {isEmployee ? "Recent Leave Applications" : "Leave Review Workflow"}
+                </h3>
+                {isEmployee && (
+                  <Link
+                    href="/leave"
+                    className="flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+                  >
+                    <PlusCircle size={14} />
+                    Apply Leave
+                  </Link>
                 )}
               </div>
 
-              <button
-                type="button"
-                onClick={() => router.push("/leave")}
-                className="mt-6 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
-              >
-                View leave requests
-              </button>
+              {isEmployee ? (
+                leaveSummary.recentLeaves.length === 0 ? (
+                  <div className="flex h-28 items-center justify-center text-xs text-slate-400">
+                    No leave requests found.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {leaveSummary.recentLeaves.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50/60 p-2.5 text-xs"
+                      >
+                        <div>
+                          <span className="font-semibold text-slate-800">{item.leaveType}</span>
+                          <p className="text-[11px] text-slate-400">
+                            {new Date(item.startDate).toLocaleDateString()} -{" "}
+                            {new Date(item.endDate).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                            item.status === "APPROVED"
+                              ? "bg-emerald-100 text-emerald-700"
+                              : item.status === "REJECTED"
+                              ? "bg-rose-100 text-rose-700"
+                              : "bg-amber-100 text-amber-700"
+                          }`}
+                        >
+                          {item.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              ) : (
+                <div className="text-center py-6">
+                  <p className="text-sm font-semibold text-slate-700">
+                    {adminStats.pendingLeaves} pending approvals awaiting
+                  </p>
+                  <Link
+                    href="/leave"
+                    className="mt-3 inline-block rounded-lg bg-emerald-50 px-4 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                  >
+                    Review All Requests
+                  </Link>
+                </div>
+              )}
+
+              <div className="mt-4 border-t border-slate-100 pt-3 text-right">
+                <Link
+                  href="/leave"
+                  className="text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+                >
+                  Go to leave center &rarr;
+                </Link>
+              </div>
             </div>
-          </section>
+          </div>
         </div>
       </div>
     </AppShell>
