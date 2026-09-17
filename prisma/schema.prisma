@@ -1,9 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -26,6 +23,31 @@ enum EmploymentStatus {
   INACTIVE
   ON_LEAVE
   TERMINATED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  HALF_DAY
+}
+
+enum LeaveType {
+  ANNUAL
+  SICK
+  CASUAL
+  MATERNITY
+  UNPAID
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ConversationType {
+  DIRECT       // Employee to Employee
+  DEPARTMENT   // Department communication
 }
 
 // ==================== USER ====================
@@ -58,11 +80,24 @@ model Employee {
   user User @relation(fields: [userId], references: [id])
 
   // Employee's department
-  departmentId String?     @db.ObjectId
-  department   Department? @relation("EmployeeDepartment", fields: [departmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  departmentId String?      @db.ObjectId
+  department   Department?  @relation("EmployeeDepartment", fields: [departmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   // Departments where this employee is the head
   headedDepartments Department[] @relation("DepartmentHead")
+
+  // Attendance records
+  attendances Attendance[]
+
+  // Leave requests created by this employee
+  leaveRequests LeaveRequest[] @relation("EmployeeLeaves")
+
+  // Leave requests reviewed by this HR/Admin
+  reviewedLeaves LeaveRequest[] @relation("ReviewedLeaves")
+
+  // Messaging relations
+  participations ConversationParticipant[]
+  sentMessages   Message[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -85,12 +120,15 @@ model Department {
   parent   Department?  @relation("DepartmentHierarchy", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   children Department[] @relation("DepartmentHierarchy")
 
-  // Department head (Cross-reference cycle)
-  headId String?   @db.ObjectId
-  head   Employee? @relation("DepartmentHead", fields: [headId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // Department head
+  headId String?    @db.ObjectId
+  head   Employee?  @relation("DepartmentHead", fields: [headId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   // Employees in this department
   employees Employee[] @relation("EmployeeDepartment")
+
+  // Conversations linked to this department
+  conversations Conversation[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -98,4 +136,123 @@ model Department {
   @@index([name])
   @@index([parentId])
   @@index([headId])
+}
+
+// ==================== ATTENDANCE ====================
+
+model Attendance {
+  id         String           @id @default(auto()) @map("_id") @db.ObjectId
+  employeeId String           @db.ObjectId
+  employee   Employee         @relation(fields: [employeeId], references: [id])
+  
+  date       DateTime         // UTC Date stripped to midnight (YYYY-MM-DD) for duplicate check
+  clockIn    DateTime
+  clockOut   DateTime?
+  status     AttendanceStatus @default(PRESENT)
+  notes      String?
+
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@unique([employeeId, date])
+  @@index([employeeId])
+  @@index([date])
+}
+
+// ==================== LEAVE REQUEST ====================
+
+model LeaveRequest {
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  employeeId  String      @db.ObjectId
+  employee    Employee    @relation("EmployeeLeaves", fields: [employeeId], references: [id])
+
+  leaveType   LeaveType
+  startDate   DateTime
+  endDate     DateTime
+  reason      String
+  status      LeaveStatus @default(PENDING)
+
+  reviewerId  String?     @db.ObjectId
+  reviewer    Employee?   @relation("ReviewedLeaves", fields: [reviewerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reviewedAt  DateTime?
+  reviewNotes String?
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([employeeId])
+  @@index([status])
+  @@index([startDate, endDate])
+}
+
+// ==================== MESSAGING & CHAT ====================
+
+model Conversation {
+  id             String           @id @default(auto()) @map("_id") @db.ObjectId
+  type           ConversationType @default(DIRECT)
+  title          String?          // Useful for department channels or group naming
+
+  // Optional link if it is a department-specific conversation
+  departmentId   String?          @db.ObjectId
+  department     Department?      @relation(fields: [departmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  participants   ConversationParticipant[]
+  messages       Message[]
+
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([departmentId])
+  @@index([type])
+}
+
+model ConversationParticipant {
+  id             String       @id @default(auto()) @map("_id") @db.ObjectId
+  conversationId String       @db.ObjectId
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  employeeId     String       @db.ObjectId
+  employee       Employee     @relation(fields: [employeeId], references: [id])
+
+  lastReadAt     DateTime?
+  joinedAt       DateTime     @default(now())
+
+  @@unique([conversationId, employeeId])
+  @@index([employeeId])
+  @@index([conversationId])
+}
+
+model Message {
+  id             String       @id @default(auto()) @map("_id") @db.ObjectId
+  conversationId String       @db.ObjectId
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  senderId       String       @db.ObjectId
+  sender         Employee     @relation(fields: [senderId], references: [id])
+
+  content        String
+  attachments    Attachment[]
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([conversationId])
+  @@index([senderId])
+  @@index([createdAt])
+}
+
+model Attachment {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  messageId   String   @db.ObjectId
+  message     Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  fileName    String
+  fileUrl     String
+  fileKey     String   // Cloudinary public_id or S3 key
+  mimeType    String
+  fileSize    Int      // File size in bytes
+
+  createdAt   DateTime @default(now())
+
+  @@index([messageId])
 }
