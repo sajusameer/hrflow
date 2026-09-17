@@ -131,6 +131,16 @@ export default function LoginPage() {
               {loading && <Loader2 size={18} className="animate-spin" />}
               {loading ? "Signing in..." : "Sign in"}
             </button>
+
+            <div className="mt-6 text-center text-sm text-slate-500">
+  Don&apos;t have an account?{" "}
+  <a
+    href="/register"
+    className="font-medium text-emerald-600 hover:text-emerald-700 hover:underline"
+  >
+    Sign up
+  </a>
+</div>
           </div>
         </form>
 

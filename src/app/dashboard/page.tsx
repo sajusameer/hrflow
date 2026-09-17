@@ -1,3 +1,7 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   ArrowUpRight,
   CalendarCheck,
@@ -7,92 +11,183 @@ import {
   Clock3,
   MessageSquare,
   UserPlus,
+  LogIn,
+  LogOut,
 } from "lucide-react";
 
 import AppShell from "@/components/layout/app-shell";
 
-const stats = [
-  {
-    label: "Total Employees",
-    value: "24",
-    change: "+8.2%",
-    description: "from last month",
-    icon: Users,
-  },
-  {
-    label: "Present Today",
-    value: "18",
-    change: "75%",
-    description: "attendance rate",
-    icon: CalendarCheck,
-  },
-  {
-    label: "Pending Leave",
-    value: "06",
-    change: "Needs review",
-    description: "leave requests",
-    icon: ClipboardList,
-  },
-  {
-    label: "Departments",
-    value: "08",
-    change: "+2",
-    description: "active departments",
-    icon: Building2,
-  },
-];
-
-const activities = [
-  {
-    title: "New employee added",
-    description: "Daniel Okoye joined Engineering",
-    time: "10 minutes ago",
-    icon: UserPlus,
-  },
-  {
-    title: "Leave request submitted",
-    description: "Fatima Bello requested annual leave",
-    time: "35 minutes ago",
-    icon: ClipboardList,
-  },
-  {
-    title: "Department updated",
-    description: "Frontend Engineering details updated",
-    time: "1 hour ago",
-    icon: Building2,
-  },
-  {
-    title: "New message received",
-    description: "You received a message from HR",
-    time: "2 hours ago",
-    icon: MessageSquare,
-  },
-];
-
-const departments = [
-  {
-    name: "Engineering",
-    employees: 12,
-    percentage: 75,
-  },
-  {
-    name: "People Operations",
-    employees: 6,
-    percentage: 45,
-  },
-  {
-    name: "Recruitment",
-    employees: 4,
-    percentage: 30,
-  },
-  {
-    name: "Finance",
-    employees: 2,
-    percentage: 18,
-  },
-];
+interface DashboardData {
+  employee: {
+    id: string;
+    fullName: string;
+    position: string;
+  };
+  myTodayAttendance: {
+    id: string;
+    clockIn: string;
+    clockOut: string | null;
+    status: "PRESENT" | "LATE" | "HALF_DAY";
+  } | null;
+  // Admin / HR stats
+  totalEmployees?: number;
+  totalDepartments?: number;
+  presentToday?: number;
+  absentToday?: number;
+  notClockedOut?: number;
+  pendingLeaves?: number;
+  recentLeaves?: Array<{
+    id: string;
+    leaveType: string;
+    employee: { fullName: string; position: string };
+  }>;
+  // Employee stats
+  myPendingLeaves?: number;
+  myTotalLeaves?: number;
+}
 
 export default function DashboardPage() {
+  const router = useRouter();
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [role, setRole] = useState<string>("");
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+
+  const fetchStats = async () => {
+    try {
+      const res = await fetch("/api/dashboard/stats");
+      const resData = await res.json();
+      if (res.ok && resData.success) {
+        setData(resData.data);
+        setRole(resData.role);
+      } else {
+        router.push("/login");
+      }
+    } catch (err) {
+      console.error("Dashboard fetch error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStats();
+  }, []);
+
+  const handleClockIn = async () => {
+    if (!data?.employee.id) return;
+    setActionLoading(true);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/attendance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employeeId: data.employee.id }),
+      });
+      const result = await res.json();
+      setActionMessage(result.message);
+      await fetchStats();
+    } catch {
+      setActionMessage("Failed to clock in");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleClockOut = async () => {
+    if (!data?.employee.id) return;
+    setActionLoading(true);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/attendance", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employeeId: data.employee.id }),
+      });
+      const result = await res.json();
+      setActionMessage(result.message);
+      await fetchStats();
+    } catch {
+      setActionMessage("Failed to clock out");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <AppShell>
+        <div className="flex h-96 items-center justify-center">
+          <div className="text-sm font-medium text-slate-500">Loading workspace dashboard...</div>
+        </div>
+      </AppShell>
+    );
+  }
+
+  const attendance = data?.myTodayAttendance;
+  const isEmployeeOnly = role === "EMPLOYEE";
+
+  // Calculations for attendance rate
+  const totalEmp = data?.totalEmployees || 0;
+  const present = data?.presentToday || 0;
+  const rate = totalEmp > 0 ? Math.round((present / totalEmp) * 100) : 0;
+
+  const stats = isEmployeeOnly
+    ? [
+        {
+          label: "Attendance Status",
+          value: attendance ? attendance.status : "Not Clocked In",
+          change: attendance?.clockOut ? "Shift ended" : attendance ? "In progress" : "Pending",
+          description: "Today's shift record",
+          icon: Clock3,
+        },
+        {
+          label: "Pending Leaves",
+          value: String(data?.myPendingLeaves ?? 0).padStart(2, "0"),
+          change: "Under review",
+          description: "Awaiting approval",
+          icon: ClipboardList,
+        },
+        {
+          label: "Total Leaves",
+          value: String(data?.myTotalLeaves ?? 0).padStart(2, "0"),
+          change: "History",
+          description: "Total submissions",
+          icon: CalendarCheck,
+        },
+      ]
+    : [
+        {
+          label: "Total Employees",
+          value: String(data?.totalEmployees ?? 0).padStart(2, "0"),
+          change: "Active",
+          description: "in organization",
+          icon: Users,
+        },
+        {
+          label: "Present Today",
+          value: String(data?.presentToday ?? 0).padStart(2, "0"),
+          change: `${rate}%`,
+          description: "attendance rate",
+          icon: CalendarCheck,
+        },
+        {
+          label: "Pending Leave",
+          value: String(data?.pendingLeaves ?? 0).padStart(2, "0"),
+          change: "Needs review",
+          description: "leave requests",
+          icon: ClipboardList,
+        },
+        {
+          label: "Departments",
+          value: String(data?.totalDepartments ?? 0).padStart(2, "0"),
+          change: "Active",
+          description: "hierarchy units",
+          icon: Building2,
+        },
+      ];
+
   return (
     <AppShell>
       <div className="min-h-screen px-4 py-6 md:px-6 lg:px-8">
@@ -101,29 +196,72 @@ export default function DashboardPage() {
           <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
             <div>
               <p className="text-sm font-medium text-emerald-600">
-                Thursday, September 17, 2026
+                {new Date().toLocaleDateString("en-US", {
+                  weekday: "long",
+                  year: "numeric",
+                  month: "long",
+                  day: "numeric",
+                })}
               </p>
 
               <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 md:text-3xl">
-                Good morning, Amina
+                Welcome back, {data?.employee.fullName}
               </h1>
 
-              <p className="mt-2 text-sm text-slate-500">
-                Here is what is happening across your organization today.
+              <p className="mt-1 text-sm text-slate-500">
+                {data?.employee.position} &bull; <span className="font-semibold text-emerald-700">{role}</span>
               </p>
             </div>
 
-            <button
-              type="button"
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
-            >
-              <UserPlus size={17} />
-              Add employee
-            </button>
+            {/* Shift Clock-In / Clock-Out Interaction */}
+            <div className="flex items-center gap-3">
+              {!attendance ? (
+                <button
+                  type="button"
+                  onClick={handleClockIn}
+                  disabled={actionLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  <LogIn size={17} />
+                  {actionLoading ? "Processing..." : "Clock In"}
+                </button>
+              ) : !attendance.clockOut ? (
+                <button
+                  type="button"
+                  onClick={handleClockOut}
+                  disabled={actionLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-700 disabled:opacity-50"
+                >
+                  <LogOut size={17} />
+                  {actionLoading ? "Processing..." : "Clock Out"}
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-600">
+                  <Clock3 size={16} /> Completed for Today
+                </span>
+              )}
+
+              {!isEmployeeOnly && (
+                <button
+                  type="button"
+                  onClick={() => router.push("/employees")}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                >
+                  <UserPlus size={17} />
+                  Manage Employees
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* Statistics */}
-          <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {actionMessage && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+              {actionMessage}
+            </div>
+          )}
+
+          {/* Statistics Grid */}
+          <section className={`grid gap-4 sm:grid-cols-2 ${isEmployeeOnly ? "xl:grid-cols-3" : "xl:grid-cols-4"}`}>
             {stats.map((stat) => {
               const Icon = stat.icon;
 
@@ -137,15 +275,10 @@ export default function DashboardPage() {
                       <Icon size={21} />
                     </div>
 
-                    <ArrowUpRight
-                      size={18}
-                      className="text-slate-300"
-                    />
+                    <ArrowUpRight size={18} className="text-slate-300" />
                   </div>
 
-                  <p className="mt-5 text-sm font-medium text-slate-500">
-                    {stat.label}
-                  </p>
+                  <p className="mt-5 text-sm font-medium text-slate-500">{stat.label}</p>
 
                   <div className="mt-2 flex items-end gap-2">
                     <h2 className="text-3xl font-bold tracking-tight text-slate-900">
@@ -157,26 +290,21 @@ export default function DashboardPage() {
                     </span>
                   </div>
 
-                  <p className="mt-1 text-xs text-slate-400">
-                    {stat.description}
-                  </p>
+                  <p className="mt-1 text-xs text-slate-400">{stat.description}</p>
                 </div>
               );
             })}
           </section>
 
-          {/* Main dashboard content */}
+          {/* Detailed Content (Attendance & Leaves) */}
           <section className="grid gap-6 xl:grid-cols-3">
-            {/* Attendance */}
+            {/* Attendance Overview Card */}
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="font-semibold text-slate-900">
-                    Attendance overview
-                  </h2>
-
+                  <h2 className="font-semibold text-slate-900">Attendance Overview</h2>
                   <p className="mt-1 text-sm text-slate-500">
-                    Today&apos;s employee attendance summary
+                    {isEmployeeOnly ? "Your attendance details for today" : "Today's employee attendance summary"}
                   </p>
                 </div>
 
@@ -185,242 +313,115 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              <div className="mt-6 grid gap-4 sm:grid-cols-3">
-                <div className="rounded-xl bg-emerald-50 p-4">
-                  <p className="text-sm text-emerald-700">
-                    Present
-                  </p>
+              {!isEmployeeOnly ? (
+                <>
+                  <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                    <div className="rounded-xl bg-emerald-50 p-4">
+                      <p className="text-sm text-emerald-700">Present</p>
+                      <p className="mt-2 text-2xl font-bold text-emerald-900">
+                        {String(data?.presentToday ?? 0).padStart(2, "0")}
+                      </p>
+                      <p className="mt-1 text-xs text-emerald-700">Employees checked in</p>
+                    </div>
 
-                  <p className="mt-2 text-2xl font-bold text-emerald-900">
-                    18
-                  </p>
+                    <div className="rounded-xl bg-amber-50 p-4">
+                      <p className="text-sm text-amber-700">Pending Out</p>
+                      <p className="mt-2 text-2xl font-bold text-amber-900">
+                        {String(data?.notClockedOut ?? 0).padStart(2, "0")}
+                      </p>
+                      <p className="mt-1 text-xs text-amber-700">Not clocked out yet</p>
+                    </div>
 
-                  <p className="mt-1 text-xs text-emerald-700">
-                    Employees checked in
-                  </p>
+                    <div className="rounded-xl bg-slate-100 p-4">
+                      <p className="text-sm text-slate-600">Absent</p>
+                      <p className="mt-2 text-2xl font-bold text-slate-900">
+                        {String(data?.absentToday ?? 0).padStart(2, "0")}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">Not checked in today</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-6">
+                    <div className="mb-2 flex items-center justify-between text-sm">
+                      <span className="font-medium text-slate-600">Organization attendance rate</span>
+                      <span className="font-semibold text-slate-900">{rate}%</span>
+                    </div>
+
+                    <div className="h-3 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-emerald-600 transition-all duration-500"
+                        style={{ width: `${rate}%` }}
+                      />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="mt-6 space-y-4">
+                  <div className="flex items-center justify-between rounded-xl bg-slate-50 p-4">
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-slate-400">Clock In Time</p>
+                      <p className="mt-1 text-base font-medium text-slate-800">
+                        {attendance?.clockIn ? new Date(attendance.clockIn).toLocaleTimeString() : "--:--"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-slate-400">Clock Out Time</p>
+                      <p className="mt-1 text-base font-medium text-slate-800">
+                        {attendance?.clockOut ? new Date(attendance.clockOut).toLocaleTimeString() : "--:--"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-slate-400">Status</p>
+                      <span className="mt-1 inline-block rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800">
+                        {attendance ? attendance.status : "ABSENT"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-
-                <div className="rounded-xl bg-amber-50 p-4">
-                  <p className="text-sm text-amber-700">
-                    Late
-                  </p>
-
-                  <p className="mt-2 text-2xl font-bold text-amber-900">
-                    03
-                  </p>
-
-                  <p className="mt-1 text-xs text-amber-700">
-                    Arrived after 9:00 AM
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-slate-100 p-4">
-                  <p className="text-sm text-slate-600">
-                    Absent
-                  </p>
-
-                  <p className="mt-2 text-2xl font-bold text-slate-900">
-                    06
-                  </p>
-
-                  <p className="mt-1 text-xs text-slate-500">
-                    Not checked in yet
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-6">
-                <div className="mb-2 flex items-center justify-between text-sm">
-                  <span className="font-medium text-slate-600">
-                    Attendance rate
-                  </span>
-
-                  <span className="font-semibold text-slate-900">
-                    75%
-                  </span>
-                </div>
-
-                <div className="h-3 overflow-hidden rounded-full bg-slate-100">
-                  <div
-                    className="h-full rounded-full bg-emerald-600"
-                    style={{ width: "75%" }}
-                  />
-                </div>
-              </div>
+              )}
             </div>
 
-            {/* Pending leave */}
+            {/* Pending Leave Card */}
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="font-semibold text-slate-900">
-                    Pending leave
-                  </h2>
-
-                  <p className="mt-1 text-sm text-slate-500">
-                    Requests awaiting review
-                  </p>
+                  <h2 className="font-semibold text-slate-900">Leave Workflow</h2>
+                  <p className="mt-1 text-sm text-slate-500">Requests awaiting review</p>
                 </div>
 
-                <ClipboardList
-                  size={20}
-                  className="text-amber-600"
-                />
+                <ClipboardList size={20} className="text-amber-600" />
               </div>
 
               <div className="mt-6 space-y-4">
-                {[
-                  {
-                    name: "Fatima Bello",
-                    type: "Annual leave",
-                    days: "3 days",
-                  },
-                  {
-                    name: "Daniel Okoye",
-                    type: "Sick leave",
-                    days: "1 day",
-                  },
-                  {
-                    name: "Tunde Adeyemi",
-                    type: "Personal leave",
-                    days: "2 days",
-                  },
-                ].map((request) => (
-                  <div
-                    key={request.name}
-                    className="flex items-center justify-between gap-3"
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-600">
-                        {request.name
-                          .split(" ")
-                          .map((part) => part[0])
-                          .join("")}
+                {data?.recentLeaves && data.recentLeaves.length > 0 ? (
+                  data.recentLeaves.map((leave) => (
+                    <div key={leave.id} className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3 last:border-0 last:pb-0">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-600">
+                          {leave.employee.fullName.slice(0, 2).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-slate-800">{leave.employee.fullName}</p>
+                          <p className="text-xs text-slate-400">{leave.employee.position}</p>
+                        </div>
                       </div>
-
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-slate-800">
-                          {request.name}
-                        </p>
-
-                        <p className="text-xs text-slate-400">
-                          {request.type}
-                        </p>
-                      </div>
+                      <span className="shrink-0 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                        {leave.leaveType}
+                      </span>
                     </div>
-
-                    <span className="shrink-0 rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
-                      {request.days}
-                    </span>
-                  </div>
-                ))}
+                  ))
+                ) : (
+                  <p className="py-6 text-center text-sm text-slate-400">No pending leave requests</p>
+                )}
               </div>
 
               <button
                 type="button"
+                onClick={() => router.push("/leave")}
                 className="mt-6 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
               >
-                View all requests
+                View leave requests
               </button>
-            </div>
-          </section>
-
-          {/* Lower dashboard content */}
-          <section className="grid gap-6 lg:grid-cols-2">
-            {/* Departments */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="font-semibold text-slate-900">
-                    Department overview
-                  </h2>
-
-                  <p className="mt-1 text-sm text-slate-500">
-                    Employee distribution by department
-                  </p>
-                </div>
-
-                <Building2
-                  size={20}
-                  className="text-emerald-600"
-                />
-              </div>
-
-              <div className="mt-6 space-y-5">
-                {departments.map((department) => (
-                  <div key={department.name}>
-                    <div className="mb-2 flex items-center justify-between gap-3">
-                      <span className="text-sm font-medium text-slate-700">
-                        {department.name}
-                      </span>
-
-                      <span className="text-xs text-slate-500">
-                        {department.employees} employees
-                      </span>
-                    </div>
-
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                      <div
-                        className="h-full rounded-full bg-emerald-600"
-                        style={{
-                          width: `${department.percentage}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Recent activity */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="font-semibold text-slate-900">
-                    Recent activity
-                  </h2>
-
-                  <p className="mt-1 text-sm text-slate-500">
-                    Latest updates from your workspace
-                  </p>
-                </div>
-
-                <MessageSquare
-                  size={20}
-                  className="text-emerald-600"
-                />
-              </div>
-
-              <div className="mt-6 space-y-5">
-                {activities.map((activity) => {
-                  const Icon = activity.icon;
-
-                  return (
-                    <div
-                      key={`${activity.title}-${activity.time}`}
-                      className="flex gap-3"
-                    >
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
-                        <Icon size={17} />
-                      </div>
-
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-slate-800">
-                          {activity.title}
-                        </p>
-
-                        <p className="mt-1 text-xs text-slate-500">
-                          {activity.description}
-                        </p>
-
-                        <p className="mt-1 text-[11px] text-slate-400">
-                          {activity.time}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
             </div>
           </section>
         </div>
