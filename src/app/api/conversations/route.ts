@@ -20,16 +20,26 @@ export async function GET(request: NextRequest) {
 
     const employee = await prisma.employee.findUnique({
       where: { userId: session.userId },
-      select: { id: true },
+      select: { id: true, departmentId: true },
     });
 
     if (!employee) {
       return NextResponse.json({ success: false, message: "Employee profile not found" }, { status: 404 });
     }
 
-    const visibleDeptIds = await getVisibleDepartmentIdsForEmployee(employee.id);
+    // ADMIN হলে সব ডিপার্টমেন্ট চ্যানেল এক্সেসযোগ্য, অন্যথায় হায়ারার্কি অনুযায়ী
+    let visibleDeptIds: string[] = [];
+    if (session.role === "ADMIN") {
+      const allDepts = await prisma.department.findMany({ select: { id: true } });
+      visibleDeptIds = allDepts.map((d) => d.id);
+    } else {
+      visibleDeptIds = await getVisibleDepartmentIdsForEmployee(employee.id);
+      if (employee.departmentId && !visibleDeptIds.includes(employee.departmentId)) {
+        visibleDeptIds.push(employee.departmentId);
+      }
+    }
 
-    // Fetch conversations where user is a direct participant OR has departmental hierarchy visibility
+    // Fetch conversations where user is a direct participant OR has departmental visibility
     const conversations = await prisma.conversation.findMany({
       where: {
         OR: [
@@ -61,7 +71,19 @@ export async function GET(request: NextRequest) {
       orderBy: { updatedAt: "desc" },
     });
 
-    return NextResponse.json({ success: true, data: conversations }, { status: 200 });
+    // ডুপ্লিকেট ডিপার্টমেন্ট চ্যানেল ফিল্টারিং (প্রতিটি ডিপার্টমেন্টের ১টি চ্যানেল দেখাবে)
+    const seenDeptIds = new Set<string>();
+    const uniqueConversations = conversations.filter((conv) => {
+      if (conv.type === ConversationType.DEPARTMENT && conv.departmentId) {
+        if (seenDeptIds.has(conv.departmentId)) {
+          return false;
+        }
+        seenDeptIds.add(conv.departmentId);
+      }
+      return true;
+    });
+
+    return NextResponse.json({ success: true, data: uniqueConversations }, { status: 200 });
   } catch (error) {
     console.error("Fetch Conversations Error:", error);
     return NextResponse.json({ success: false, message: "Failed to fetch conversations" }, { status: 500 });
@@ -78,7 +100,7 @@ export async function POST(request: NextRequest) {
 
     const employee = await prisma.employee.findUnique({
       where: { userId: session.userId },
-      select: { id: true },
+      select: { id: true, departmentId: true },
     });
 
     if (!employee) {
@@ -88,7 +110,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { type, recipientEmployeeId, departmentId, title } = body;
 
-    // DIRECT Conversation: Check if already exists
+    // DIRECT Conversation
     if (type === ConversationType.DIRECT) {
       if (!recipientEmployeeId) {
         return NextResponse.json({ success: false, message: "Recipient employee ID is required" }, { status: 400 });
@@ -106,6 +128,13 @@ export async function POST(request: NextRequest) {
             { participants: { some: { employeeId: recipientEmployeeId } } },
           ],
         },
+        include: {
+          participants: {
+            include: {
+              employee: { select: { id: true, fullName: true, email: true, position: true } },
+            },
+          },
+        },
       });
 
       if (existing) {
@@ -122,6 +151,13 @@ export async function POST(request: NextRequest) {
             ],
           },
         },
+        include: {
+          participants: {
+            include: {
+              employee: { select: { id: true, fullName: true, email: true, position: true } },
+            },
+          },
+        },
       });
 
       return NextResponse.json({ success: true, data: newConversation }, { status: 201 });
@@ -133,18 +169,74 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, message: "Department ID is required" }, { status: 400 });
       }
 
-      const newDeptConv = await prisma.conversation.create({
-        data: {
+      // 1. পারমিশন ভ্যালিডেশন (Admin বাইপাস ও Own Department এক্সেস)
+      if (session.role !== "ADMIN") {
+        const visibleDeptIds = await getVisibleDepartmentIdsForEmployee(employee.id);
+        const isOwnDept = employee.departmentId === departmentId;
+
+        if (!visibleDeptIds.includes(departmentId) && !isOwnDept) {
+          return NextResponse.json({ 
+            success: false, 
+            message: "You are not authorized to access or initiate this department channel" 
+          }, { status: 403 });
+        }
+      }
+
+      // 2. এই ডিপার্টমেন্টের কনভারসেশন আগে থেকেই আছে কি না চেক করা
+      let deptConv = await prisma.conversation.findFirst({
+        where: {
           type: ConversationType.DEPARTMENT,
-          title: title || "Department Communication",
-          departmentId,
+          departmentId: departmentId,
+        },
+        include: {
+          department: { select: { id: true, name: true } },
           participants: {
-            create: [{ employeeId: employee.id }],
+            include: {
+              employee: { select: { id: true, fullName: true } },
+            },
           },
         },
       });
 
-      return NextResponse.json({ success: true, data: newDeptConv }, { status: 201 });
+      // 3. না থাকলে নতুন চ্যানেল তৈরি করা
+      if (!deptConv) {
+        const deptInfo = await prisma.department.findUnique({
+          where: { id: departmentId },
+          select: { name: true },
+        });
+
+        deptConv = await prisma.conversation.create({
+          data: {
+            type: ConversationType.DEPARTMENT,
+            title: title || `${deptInfo?.name || "Department"} Channel`,
+            departmentId,
+            participants: {
+              create: [{ employeeId: employee.id }],
+            },
+          },
+          include: {
+            department: { select: { id: true, name: true } },
+            participants: {
+              include: {
+                employee: { select: { id: true, fullName: true } },
+              },
+            },
+          },
+        });
+      } else {
+        // যদি চ্যানেল থাকে কিন্তু বর্তমান ইউজার এখনও participant না থাকে, যুক্ত করা
+        const isParticipant = deptConv.participants.some(p => p.employee.id === employee.id);
+        if (!isParticipant) {
+          await prisma.conversationParticipant.create({
+            data: {
+              conversationId: deptConv.id,
+              employeeId: employee.id,
+            },
+          });
+        }
+      }
+
+      return NextResponse.json({ success: true, data: deptConv }, { status: 200 });
     }
 
     return NextResponse.json({ success: false, message: "Invalid conversation type" }, { status: 400 });

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifySession } from "@/lib/auth/session";
-import { canAccessConversation } from "@/lib/messaging-visibility";
+import { getVisibleDepartmentIdsForEmployee } from "@/lib/messaging-visibility";
+import { ConversationType } from "@prisma/client";
 
 async function getAuthenticatedUser(request: NextRequest) {
   const token = request.cookies.get("session")?.value;
@@ -9,7 +10,7 @@ async function getAuthenticatedUser(request: NextRequest) {
   return await verifySession(token);
 }
 
-// GET /api/conversations/[id]/messages - Get message history
+// GET /api/conversations/[id]/messages
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -20,24 +21,43 @@ export async function GET(
       return NextResponse.json({ success: false, message: "Not authenticated" }, { status: 401 });
     }
 
+    const { id: conversationId } = await params;
+
     const employee = await prisma.employee.findUnique({
       where: { userId: session.userId },
-      select: { id: true },
+      select: { id: true, departmentId: true },
     });
 
     if (!employee) {
       return NextResponse.json({ success: false, message: "Employee profile not found" }, { status: 404 });
     }
 
-    const { id: conversationId } = await params;
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: {
+        participants: { select: { employeeId: true } },
+      },
+    });
 
-    // Strict Authorization check (Private Direct vs Upward Hierarchy)
-    const hasAccess = await canAccessConversation(employee.id, conversationId);
-    if (!hasAccess) {
-      return NextResponse.json(
-        { success: false, message: "Access denied. You are not authorized to view this conversation." },
-        { status: 403 }
-      );
+    if (!conversation) {
+      return NextResponse.json({ success: false, message: "Conversation not found" }, { status: 404 });
+    }
+
+    if (session.role !== "ADMIN") {
+      if (conversation.type === ConversationType.DIRECT) {
+        const isParticipant = conversation.participants.some(
+          (p) => p.employeeId === employee.id
+        );
+        if (!isParticipant) {
+          return NextResponse.json({ success: false, message: "Access denied" }, { status: 403 });
+        }
+      } else if (conversation.type === ConversationType.DEPARTMENT && conversation.departmentId) {
+        const visibleDeptIds = await getVisibleDepartmentIdsForEmployee(employee.id);
+        const isOwnDept = employee.departmentId === conversation.departmentId;
+        if (!visibleDeptIds.includes(conversation.departmentId) && !isOwnDept) {
+          return NextResponse.json({ success: false, message: "Access denied" }, { status: 403 });
+        }
+      }
     }
 
     const messages = await prisma.message.findMany({
@@ -48,8 +68,6 @@ export async function GET(
             id: true,
             fullName: true,
             email: true,
-            position: true,
-            imageUrl: true,
           },
         },
         attachments: true,
@@ -59,12 +77,12 @@ export async function GET(
 
     return NextResponse.json({ success: true, data: messages }, { status: 200 });
   } catch (error) {
-    console.error("Get Messages Error:", error);
+    console.error("Fetch Messages Error:", error);
     return NextResponse.json({ success: false, message: "Failed to fetch messages" }, { status: 500 });
   }
 }
 
-// POST /api/conversations/[id]/messages - Send a message with optional attachments
+// POST /api/conversations/[id]/messages
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -75,64 +93,95 @@ export async function POST(
       return NextResponse.json({ success: false, message: "Not authenticated" }, { status: 401 });
     }
 
+    const { id: conversationId } = await params;
+
     const employee = await prisma.employee.findUnique({
       where: { userId: session.userId },
-      select: { id: true },
+      select: { id: true, departmentId: true },
     });
 
     if (!employee) {
       return NextResponse.json({ success: false, message: "Employee profile not found" }, { status: 404 });
     }
 
-    const { id: conversationId } = await params;
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: {
+        participants: { select: { employeeId: true } },
+      },
+    });
 
-    // Verify access
-    const hasAccess = await canAccessConversation(employee.id, conversationId);
-    if (!hasAccess) {
-      return NextResponse.json({ success: false, message: "Access denied" }, { status: 403 });
+    if (!conversation) {
+      return NextResponse.json({ success: false, message: "Conversation not found" }, { status: 404 });
+    }
+
+    if (session.role !== "ADMIN") {
+      if (conversation.type === ConversationType.DIRECT) {
+        const isParticipant = conversation.participants.some(
+          (p) => p.employeeId === employee.id
+        );
+        if (!isParticipant) {
+          return NextResponse.json({ success: false, message: "Access denied" }, { status: 403 });
+        }
+      } else if (conversation.type === ConversationType.DEPARTMENT && conversation.departmentId) {
+        const visibleDeptIds = await getVisibleDepartmentIdsForEmployee(employee.id);
+        const isOwnDept = employee.departmentId === conversation.departmentId;
+        if (!visibleDeptIds.includes(conversation.departmentId) && !isOwnDept) {
+          return NextResponse.json({ success: false, message: "Access denied" }, { status: 403 });
+        }
+      }
     }
 
     const body = await request.json();
     const { content, attachments } = body;
 
-    if (!content && (!attachments || attachments.length === 0)) {
+    if (!content?.trim() && (!attachments || attachments.length === 0)) {
       return NextResponse.json(
-        { success: false, message: "Message cannot be empty." },
+        { success: false, message: "Message content or attachment is required" },
         { status: 400 }
       );
     }
 
-    // Create message with relation to conversation & attachments
-    const message = await prisma.message.create({
-      data: {
-        conversationId,
-        senderId: employee.id,
-        content: content || "",
-        attachments: attachments && attachments.length > 0
-          ? {
-              create: attachments.map((att: { fileName: string; fileUrl: string; fileKey: string; mimeType: string; fileSize: number }) => ({
-                fileName: att.fileName,
-                fileUrl: att.fileUrl,
-                fileKey: att.fileKey,
-                mimeType: att.mimeType,
-                fileSize: att.fileSize,
-              })),
-            }
-          : undefined,
-      },
-      include: {
-        sender: { select: { id: true, fullName: true, email: true } },
-        attachments: true,
-      },
-    });
+    const [message] = await prisma.$transaction([
+      prisma.message.create({
+        data: {
+          conversationId,
+          senderId: employee.id,
+          content: content?.trim() || "",
+          attachments:
+            attachments && attachments.length > 0
+              ? {
+                  create: attachments.map((att: any) => {
+                    const key = att.fileKey || att.storageKey || `${Date.now()}-${att.fileName}`;
+                    return {
+                      fileName: att.fileName,
+                      fileSize: Number(att.fileSize) || 0,
+                      mimeType: att.mimeType,
+                      fileKey: key, // আপনার স্কিমার আসল ফিল্ড
+                      fileUrl: att.fileUrl || `/uploads/${key}`,
+                    };
+                  }),
+                }
+              : undefined,
+        },
+        include: {
+          sender: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+            },
+          },
+          attachments: true,
+        },
+      }),
+      prisma.conversation.update({
+        where: { id: conversationId },
+        data: { updatedAt: new Date() },
+      }),
+    ]);
 
-    // Bump conversation updatedAt
-    await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { updatedAt: new Date() },
-    });
-
-    return NextResponse.json({ success: true, message: "Message sent", data: message }, { status: 201 });
+    return NextResponse.json({ success: true, data: message }, { status: 201 });
   } catch (error) {
     console.error("Send Message Error:", error);
     return NextResponse.json({ success: false, message: "Failed to send message" }, { status: 500 });
