@@ -11,8 +11,6 @@ import {
   Users,
   Building2,
   Clock3,
-  CheckCircle2,
-  AlertCircle,
   PlusCircle,
   ShieldCheck,
   Network,
@@ -32,6 +30,7 @@ interface UserData {
 }
 
 interface AttendanceToday {
+  id?: string;
   clockIn: string | null;
   clockOut: string | null;
   status: "PRESENT" | "LATE" | "HALF_DAY" | "ABSENT";
@@ -48,6 +47,17 @@ interface LeaveSummary {
     status: "PENDING" | "APPROVED" | "REJECTED";
   }>;
 }
+
+// নাইজেরিয়ান ক্যালেন্ডার ডেট (YYYY-MM-DD) বের করার হেল্পার
+const getNigerianDateString = () => {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Lagos",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(new Date());
+};
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -93,15 +103,20 @@ export default function DashboardPage() {
           const attRes = await fetch(`/api/attendance?employeeId=${empId}`);
           const attData = await attRes.json();
           if (attData.success && Array.isArray(attData.data)) {
-            const todayStr = new Date().toISOString().split("T")[0];
-            const foundToday = attData.data.find((r: any) =>
-              r.date.startsWith(todayStr)
-            );
+            const todayStr = getNigerianDateString();
+            
+            // ফিল্ড নামের সব ধরনের ভেরিয়েশন সাপোর্ট (date, clockIn, clockInTime, createdAt)
+            const foundToday = attData.data.find((r: any) => {
+              const d = r.date || r.clockIn || r.clockInTime || r.createdAt;
+              return d && String(d).startsWith(todayStr);
+            });
+
             if (foundToday) {
               setTodayAttendance({
-                clockIn: foundToday.clockIn,
-                clockOut: foundToday.clockOut,
-                status: foundToday.status,
+                id: foundToday.id,
+                clockIn: foundToday.clockIn || foundToday.clockInTime || null,
+                clockOut: foundToday.clockOut || foundToday.clockOutTime || null,
+                status: foundToday.status || "PRESENT",
               });
             } else {
               setTodayAttendance(null);
@@ -132,10 +147,11 @@ export default function DashboardPage() {
         const leaves = await leaveRes.json();
         const depts = await deptRes.json();
 
-        const todayStr = new Date().toISOString().split("T")[0];
-        const presentCount = (atts.data || []).filter((r: any) =>
-          r.date.startsWith(todayStr)
-        ).length;
+        const todayStr = getNigerianDateString();
+        const presentCount = (atts.data || []).filter((r: any) => {
+          const d = r.date || r.clockIn || r.clockInTime || r.createdAt;
+          return d && String(d).startsWith(todayStr);
+        }).length;
 
         const pendingLeaves = (leaves.data || []).filter(
           (l: any) => l.status === "PENDING"
@@ -159,39 +175,102 @@ export default function DashboardPage() {
     fetchDashboardData();
   }, []);
 
-  const handleClockToggle = async () => {
+  const hasClockedIn = Boolean(todayAttendance?.clockIn);
+  const hasClockedOut = Boolean(todayAttendance?.clockOut);
+
+  // // ক্লক-ইন এবং ক্লক-আউট হ্যান্ডলার
+  // const handleClockToggle = async () => {
+  //   if (!user?.employee?.id) return;
+  //   setClockLoading(true);
+
+  //   try {
+  //     // বাটন স্টেটের ওপর ভিত্তি করে সিদ্ধান্ত নেওয়া
+  //     const isClockingOut = hasClockedIn && !hasClockedOut;
+  //     const primaryEndpoint = isClockingOut
+  //       ? "/api/attendance/clock-out"
+  //       : "/api/attendance/clock-in";
+
+  //     let res = await fetch(primaryEndpoint, {
+  //       method: "POST",
+  //       headers: { "Content-Type": "application/json" },
+  //       body: JSON.stringify({
+  //         employeeId: user.employee.id,
+  //         attendanceId: todayAttendance?.id,
+  //       }),
+  //     });
+
+  //     // সাব-রুট না থাকলে ফলব্যাক রুট
+  //     if (!res.ok && (res.status === 404 || res.status === 405)) {
+  //       res = await fetch("/api/attendance", {
+  //         method: "POST",
+  //         headers: { "Content-Type": "application/json" },
+  //         body: JSON.stringify({
+  //           employeeId: user.employee.id,
+  //           action: isClockingOut ? "CLOCK_OUT" : "CLOCK_IN",
+  //           attendanceId: todayAttendance?.id,
+  //         }),
+  //       });
+  //     }
+
+  //     const result = await res.json().catch(() => ({}));
+
+  //     if (res.ok && result.success !== false) {
+  //       await fetchDashboardData();
+  //     } else {
+  //       alert(result.message || "Failed to update attendance");
+  //     }
+  //   } catch (err) {
+  //     console.error("Clock action error:", err);
+  //     alert("Network error while recording attendance");
+  //   } finally {
+  //     setClockLoading(false);
+  //   }
+  // };
+const handleClockToggle = async () => {
     if (!user?.employee?.id) return;
     setClockLoading(true);
-    try {
-      const isClockingOut = todayAttendance?.clockIn && !todayAttendance?.clockOut;
-      const endpoint = isClockingOut ? "/api/attendance/clock-out" : "/api/attendance/clock-in";
 
-      const res = await fetch(endpoint, {
-        method: "POST",
+    try {
+      const isClockingOut = Boolean(todayAttendance?.clockIn && !todayAttendance?.clockOut);
+
+      // মেথড নির্ধারণ: ক্লক আউটের জন্য PATCH ও POST (action সহ) দুটিই সমর্থিত
+      const res = await fetch("/api/attendance", {
+        method: isClockingOut ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ employeeId: user.employee.id }),
+        body: JSON.stringify({
+          employeeId: user.employee.id,
+          action: isClockingOut ? "CLOCK_OUT" : "CLOCK_IN",
+        }),
       });
 
-      if (res.ok) {
+      const result = await res.json().catch(() => ({}));
+
+      if (res.ok && result.success) {
         await fetchDashboardData();
+      } else {
+        alert(result.message || "Failed to update attendance");
       }
     } catch (err) {
       console.error("Clock action error:", err);
+      alert("Network error while updating attendance");
     } finally {
       setClockLoading(false);
     }
   };
-
+  // নাইজেরিয়ান টাইমজোন অনুযায়ী তারিখ প্রদর্শন
   const currentDate = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Africa/Lagos",
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
   }).format(new Date());
 
+  // নাইজেরিয়ান টাইমজোন অনুযায়ী সময় প্রদর্শন (WAT)
   const formatTime = (timeStr: string | null) => {
     if (!timeStr) return "--:--";
-    return new Date(timeStr).toLocaleTimeString([], {
+    return new Date(timeStr).toLocaleTimeString("en-US", {
+      timeZone: "Africa/Lagos",
       hour: "2-digit",
       minute: "2-digit",
     });
@@ -210,8 +289,6 @@ export default function DashboardPage() {
   const isEmployee = user?.role === "EMPLOYEE";
   const isAdmin = user?.role === "ADMIN";
   const isHR = user?.role === "HR_MANAGER";
-  const hasClockedIn = Boolean(todayAttendance?.clockIn);
-  const hasClockedOut = Boolean(todayAttendance?.clockOut);
 
   return (
     <AppShell>
@@ -221,7 +298,7 @@ export default function DashboardPage() {
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-emerald-600">
-                {currentDate}
+                {currentDate} (WAT)
               </p>
               <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 md:text-3xl dark:text-white">
                 Welcome back, {user?.employee?.fullName || "Colleague"}
@@ -367,7 +444,6 @@ export default function DashboardPage() {
               </div>
             </div>
           ) : (
-            /* Admin & HR Manager Metric Grid */
             <div className="grid gap-4 sm:grid-cols-4">
               <div className="rounded-2xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-sm">
                 <p className="text-xs font-semibold uppercase text-slate-400 dark:text-zinc-500">Total Workforce</p>
@@ -388,82 +464,8 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Role-Specific Overview Panels */}
-          {isAdmin && (
-            <div className="rounded-2xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow-sm">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 dark:border-zinc-800 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400">
-                    <ShieldCheck size={20} />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-slate-900 dark:text-white">Organization Hierarchy & Governance</h3>
-                    <p className="text-xs text-slate-500 dark:text-zinc-400">System Administrator Authority & Controls</p>
-                  </div>
-                </div>
-                <span className="inline-flex w-fit items-center rounded-full bg-rose-50 dark:bg-rose-950/50 px-3 py-1 text-xs font-semibold text-rose-700 dark:text-rose-300">
-                  Global Access Level
-                </span>
-              </div>
-              <p className="mt-4 text-xs sm:text-sm text-slate-600 dark:text-zinc-400">
-                You have full authority to structure hierarchical departments, enforce cyclic validation rules, assign active department heads, and manage employee roles across the enterprise.
-              </p>
-              <div className="mt-4 flex flex-wrap gap-4 pt-2">
-                <Link
-                  href="/departments"
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
-                >
-                  <Network size={15} /> Configure Department Tree &rarr;
-                </Link>
-                <Link
-                  href="/employees"
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
-                >
-                  <Users size={15} /> Manage Roles & Deactivations &rarr;
-                </Link>
-              </div>
-            </div>
-          )}
-
-          {isHR && (
-            <div className="rounded-2xl border border-emerald-100 dark:border-emerald-950/60 bg-emerald-50/40 dark:bg-emerald-950/20 p-6 shadow-sm">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-emerald-100 dark:border-emerald-900/40 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300">
-                    <UserCheck size={20} />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-emerald-950 dark:text-emerald-200">People & Workforce Operations</h3>
-                    <p className="text-xs text-emerald-700/80 dark:text-emerald-400/80">Daily Staff Management & Workflow Review</p>
-                  </div>
-                </div>
-                <span className="inline-flex w-fit items-center rounded-full bg-emerald-200/60 dark:bg-emerald-900/60 px-3 py-1 text-xs font-semibold text-emerald-800 dark:text-emerald-300">
-                  HR Operations
-                </span>
-              </div>
-              <p className="mt-4 text-xs sm:text-sm text-slate-600 dark:text-zinc-400">
-                Review employee attendance logs, approve or reject pending leave workflows with remarks, and maintain active staffing rosters across departments.
-              </p>
-              <div className="mt-4 flex flex-wrap gap-4 pt-2">
-                <Link
-                  href="/leave"
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300"
-                >
-                  <ClipboardList size={15} /> Process Leave Requests ({adminStats.pendingLeaves}) &rarr;
-                </Link>
-                <Link
-                  href="/attendance"
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300"
-                >
-                  <Clock3 size={15} /> Inspect Attendance Logs &rarr;
-                </Link>
-              </div>
-            </div>
-          )}
-
           {/* Lower Section */}
           <div className="grid gap-6 md:grid-cols-2">
-            {/* Box 1: Today's Shift Logs */}
             <div className="rounded-2xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow-sm">
               <div className="mb-4 flex items-center justify-between border-b border-slate-100 dark:border-zinc-800 pb-3">
                 <h3 className="font-semibold text-slate-900 dark:text-white">Today&apos;s Attendance Record</h3>
@@ -472,13 +474,13 @@ export default function DashboardPage() {
 
               <div className="grid grid-cols-3 gap-4 rounded-xl bg-slate-50 dark:bg-zinc-800/60 p-4 text-center">
                 <div>
-                  <p className="text-xs text-slate-400 dark:text-zinc-500">CLOCK IN</p>
+                  <p className="text-xs text-slate-400 dark:text-zinc-500">CLOCK IN (WAT)</p>
                   <p className="mt-1 text-sm font-bold text-slate-800 dark:text-zinc-200">
                     {formatTime(todayAttendance?.clockIn ?? null)}
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs text-slate-400 dark:text-zinc-500">CLOCK OUT</p>
+                  <p className="text-xs text-slate-400 dark:text-zinc-500">CLOCK OUT (WAT)</p>
                   <p className="mt-1 text-sm font-bold text-slate-800 dark:text-zinc-200">
                     {formatTime(todayAttendance?.clockOut ?? null)}
                   </p>
@@ -509,7 +511,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Box 2: Leave Summary & Quick Action */}
+            {/* Leave Box */}
             <div className="rounded-2xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow-sm">
               <div className="mb-4 flex items-center justify-between border-b border-slate-100 dark:border-zinc-800 pb-3">
                 <h3 className="font-semibold text-slate-900 dark:text-white">

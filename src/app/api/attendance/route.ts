@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-// Helper to get normalized UTC midnight date for MongoDB unique index
+// Helper to get normalized UTC midnight date
 function getTodayUtc(): Date {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const employeeId = searchParams.get("employeeId");
-    const dateParam = searchParams.get("date"); // Format: YYYY-MM-DD
+    const dateParam = searchParams.get("date");
     const status = searchParams.get("status");
 
     const whereClause: Record<string, unknown> = {};
@@ -57,11 +57,11 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST: Clock-in action
+// POST: Handles Clock-In & Clock-Out action
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { employeeId, notes } = body;
+    const { employeeId, notes, action } = body;
 
     if (!employeeId) {
       return NextResponse.json(
@@ -70,7 +70,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Verify employee exists and is active
     const employee = await prisma.employee.findUnique({
       where: { id: employeeId },
       select: { id: true, employmentStatus: true },
@@ -86,7 +85,43 @@ export async function POST(req: NextRequest) {
     const todayUtc = getTodayUtc();
     const now = new Date();
 
-    // Check if attendance already recorded today (duplicate prevention)
+    // Clock-Out Logic
+    if (action === "CLOCK_OUT") {
+      const record = await prisma.attendance.findUnique({
+        where: {
+          employeeId_date: {
+            employeeId,
+            date: todayUtc,
+          },
+        },
+      });
+
+      if (!record) {
+        return NextResponse.json(
+          { success: false, message: "No clock-in record found for today. You must clock in first." },
+          { status: 400 }
+        );
+      }
+
+      if (record.clockOut) {
+        return NextResponse.json(
+          { success: false, message: "Already clocked out for today." },
+          { status: 400 }
+        );
+      }
+
+      const updated = await prisma.attendance.update({
+        where: { id: record.id },
+        data: { clockOut: now },
+      });
+
+      return NextResponse.json(
+        { success: true, message: "Clocked out successfully.", data: updated },
+        { status: 200 }
+      );
+    }
+
+    // Clock-In Logic
     const existing = await prisma.attendance.findUnique({
       where: {
         employeeId_date: {
@@ -103,10 +138,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Determine status: Late if clock-in is past 09:15 AM local/UTC
-    const currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
-    const isLate = currentHour > 9 || (currentHour === 9 && currentMinute > 15);
+    // Calculate Late status using Nigerian Time (Africa/Lagos)
+    const lagosTimeParts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Africa/Lagos",
+      hour: "numeric",
+      minute: "numeric",
+      hour12: false,
+    }).formatToParts(now);
+
+    const lagosHour = parseInt(lagosTimeParts.find((p) => p.type === "hour")?.value || "0", 10);
+    const lagosMinute = parseInt(lagosTimeParts.find((p) => p.type === "minute")?.value || "0", 10);
+    const isLate = lagosHour > 9 || (lagosHour === 9 && lagosMinute > 15);
 
     const record = await prisma.attendance.create({
       data: {
@@ -134,7 +176,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// PATCH: Clock-out action
+// PATCH: Fallback Clock-out
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
@@ -148,8 +190,6 @@ export async function PATCH(req: NextRequest) {
     }
 
     const todayUtc = getTodayUtc();
-
-    // Find today's attendance record
     const record = await prisma.attendance.findUnique({
       where: {
         employeeId_date: {
@@ -173,13 +213,9 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const now = new Date();
-
     const updated = await prisma.attendance.update({
       where: { id: record.id },
-      data: {
-        clockOut: now,
-      },
+      data: { clockOut: new Date() },
     });
 
     return NextResponse.json(

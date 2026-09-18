@@ -82,65 +82,90 @@ export default function AppShell({ children }: AppShellProps) {
     }
   };
 
-  // Fetch Current User & Dynamic Notifications
+  // Fetch Current User & Generate Real Contextual Notifications
   useEffect(() => {
     async function fetchCurrentUser() {
       try {
         const res = await fetch("/api/auth/me");
-        if (res.ok) {
-          const data = await res.json();
-          if (data.user?.employee) {
-            const role = data.user.role;
-            setUser({
-              fullName: data.user.employee.fullName,
-              position: data.user.employee.position || "Staff",
-              role: role,
-            });
+        if (!res.ok) return;
 
-            // Set contextual notifications based on role
-            if (role === "EMPLOYEE") {
-              setNotifications([
-                {
-                  id: "1",
+        const data = await res.json();
+        if (data.user?.employee) {
+          const role = data.user.role;
+          const empId = data.user.employee.id;
+
+          setUser({
+            fullName: data.user.employee.fullName,
+            position: data.user.employee.position || "Staff",
+            role: role,
+          });
+
+          // ডাইনামিক নোটিফিকেশন লোড করা
+          if (role === "EMPLOYEE") {
+            // শুধুমাত্র লগইন করা ইউজারের লিভ রিকোয়েস্ট চেক করা
+            const leaveRes = await fetch(`/api/leave?employeeId=${empId}`);
+            const leaveData = await leaveRes.json();
+
+            const realNotifications: NotificationItem[] = [];
+
+            if (leaveData.success && Array.isArray(leaveData.data) && leaveData.data.length > 0) {
+              // ইউজারের লেটেস্ট লিভ রিকোয়েস্ট থেকে নোটিফিকেশন তৈরি
+              const latestLeave = leaveData.data[0];
+              if (latestLeave.status === "PENDING") {
+                realNotifications.push({
+                  id: latestLeave.id,
                   title: "Leave Status",
-                  message: "Your sick leave application is currently under review.",
-                  time: "10m ago",
+                  message: `Your ${latestLeave.leaveType.toLowerCase()} leave application is currently under review.`,
+                  time: "Recent",
                   read: false,
                   type: "leave",
-                },
-                {
-                  id: "2",
-                  title: "Shift Logged",
-                  message: "Today's shift attendance was recorded successfully.",
-                  time: "1h ago",
-                  read: false,
-                  type: "system",
-                },
-              ]);
-            } else {
-              setNotifications([
-                {
-                  id: "1",
-                  title: "Pending Leave Review",
-                  message: "Sajeda Begum submitted a leave request awaiting approval.",
-                  time: "20m ago",
+                });
+              } else if (latestLeave.status === "APPROVED") {
+                realNotifications.push({
+                  id: latestLeave.id,
+                  title: "Leave Approved",
+                  message: `Your ${latestLeave.leaveType.toLowerCase()} leave request has been approved.`,
+                  time: "Recent",
                   read: false,
                   type: "leave",
-                },
-                {
-                  id: "2",
-                  title: "Organization Update",
-                  message: "All 4 departments active. Attendance log verified.",
-                  time: "2h ago",
-                  read: true,
-                  type: "system",
-                },
-              ]);
+                });
+              } else if (latestLeave.status === "REJECTED") {
+                realNotifications.push({
+                  id: latestLeave.id,
+                  title: "Leave Rejected",
+                  message: `Your ${latestLeave.leaveType.toLowerCase()} leave request was rejected.`,
+                  time: "Recent",
+                  read: false,
+                  type: "leave",
+                });
+              }
             }
+
+            setNotifications(realNotifications);
+          } else {
+            // Admin বা HR এর জন্য পেন্ডিং রিকোয়েস্ট লোড করা
+            const leaveRes = await fetch("/api/leave");
+            const leaveData = await leaveRes.json();
+
+            const pendingList = (leaveData.data || []).filter((l: any) => l.status === "PENDING");
+            const hrNotifications: NotificationItem[] = [];
+
+            if (pendingList.length > 0) {
+              hrNotifications.push({
+                id: pendingList[0].id,
+                title: "Pending Leave Review",
+                message: `${pendingList[0].employee?.fullName || "An employee"} submitted a leave request awaiting approval.`,
+                time: "Recent",
+                read: false,
+                type: "leave",
+              });
+            }
+
+            setNotifications(hrNotifications);
           }
         }
       } catch (err) {
-        console.error("Failed to load user profile:", err);
+        console.error("Failed to load user profile or notifications:", err);
       }
     }
     fetchCurrentUser();
@@ -264,7 +289,6 @@ export default function AppShell({ children }: AppShellProps) {
 
       {/* Main Content Area */}
       <div className="flex flex-1 flex-col md:pl-64">
-        {/* Dynamic Top Header */}
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white/80 px-4 backdrop-blur-md transition-colors duration-200 dark:border-slate-800 dark:bg-slate-900/80 md:px-8">
           <div className="flex items-center gap-3">
             <button
@@ -281,7 +305,6 @@ export default function AppShell({ children }: AppShellProps) {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* Dark / Light Theme Toggle */}
             <button
               type="button"
               onClick={toggleTheme}
@@ -388,7 +411,6 @@ export default function AppShell({ children }: AppShellProps) {
           </div>
         </header>
 
-        {/* Page Content */}
         <main className="flex-1">{children}</main>
       </div>
     </div>
