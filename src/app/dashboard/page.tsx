@@ -267,14 +267,22 @@ const handleClockToggle = async () => {
   }).format(new Date());
 
   // নাইজেরিয়ান টাইমজোন অনুযায়ী সময় প্রদর্শন (WAT)
+  // const formatTime = (timeStr: string | null) => {
+  //   if (!timeStr) return "--:--";
+  //   return new Date(timeStr).toLocaleTimeString("en-US", {
+  //     timeZone: "Africa/Lagos",
+  //     hour: "2-digit",
+  //     minute: "2-digit",
+  //   });
+  // };
   const formatTime = (timeStr: string | null) => {
-    if (!timeStr) return "--:--";
-    return new Date(timeStr).toLocaleTimeString("en-US", {
-      timeZone: "Africa/Lagos",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
+  if (!timeStr) return "--:--";
+  return new Date(timeStr).toLocaleTimeString("en-US", {
+    timeZone: "Africa/Lagos", // ✅ নাইজেরিয়ান সময়ে রেন্ডার হবে
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
 
   if (loading) {
     return (

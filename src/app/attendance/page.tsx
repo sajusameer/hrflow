@@ -81,6 +81,26 @@ export default function AttendancePage() {
     return `${hours}h ${minutes}m`;
   };
 
+  // নাইজেরিয়ান টাইমজোন (WAT / Africa/Lagos) অনুযায়ী সময় প্রদর্শন
+  const formatTimeWAT = (timeStr: string | null) => {
+    if (!timeStr) return "--:--";
+    return new Date(timeStr).toLocaleTimeString("en-US", {
+      timeZone: "Africa/Lagos",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  // নাইজেরিয়ান ক্যালেন্ডার ডেট ফরম্যাটার
+  const formatDateWAT = (dateStr: string) => {
+    return new Date(dateStr).toLocaleDateString("en-US", {
+      timeZone: "Africa/Lagos",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  };
+
   return (
     <AppShell>
       <div className="min-h-screen px-4 py-6 md:px-6 lg:px-8">
@@ -92,8 +112,8 @@ export default function AttendancePage() {
             </h1>
             <p className="mt-1 text-sm text-slate-500">
               {currentUser?.role === "EMPLOYEE"
-                ? "View your logs, shift hours, and punctuality records"
-                : "Organization-wide daily attendance and work hour tracking"}
+                ? "View your logs, shift hours, and punctuality records (WAT Timezone)"
+                : "Organization-wide daily attendance and work hour tracking (WAT Timezone)"}
             </p>
           </div>
 
@@ -140,7 +160,7 @@ export default function AttendancePage() {
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 p-5">
               <h2 className="font-semibold text-slate-900">Shift Logs</h2>
-              <p className="text-xs text-slate-400">Detailed punch-in and punch-out history</p>
+              <p className="text-xs text-slate-400">Detailed punch-in and punch-out history in West Africa Time (WAT)</p>
             </div>
 
             {loading ? (
@@ -156,8 +176,8 @@ export default function AttendancePage() {
                     <tr>
                       <th className="px-6 py-4">Employee</th>
                       <th className="px-6 py-4">Date</th>
-                      <th className="px-6 py-4">Clock In</th>
-                      <th className="px-6 py-4">Clock Out</th>
+                      <th className="px-6 py-4">Clock In (WAT)</th>
+                      <th className="px-6 py-4">Clock Out (WAT)</th>
                       <th className="px-6 py-4">Work Duration</th>
                       <th className="px-6 py-4">Status</th>
                     </tr>
@@ -174,30 +194,20 @@ export default function AttendancePage() {
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-1 text-xs text-slate-600">
                             <Calendar size={13} className="text-slate-400" />
-                            {new Date(row.date).toLocaleDateString("en-US", {
-                              month: "short",
-                              day: "numeric",
-                              year: "numeric",
-                            })}
+                            {formatDateWAT(row.date)}
                           </div>
                         </td>
                         <td className="px-6 py-4 text-xs font-medium text-slate-700">
                           <div className="flex items-center gap-1.5">
                             <LogIn size={13} className="text-emerald-600" />
-                            {new Date(row.clockIn).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
+                            {formatTimeWAT(row.clockIn)}
                           </div>
                         </td>
                         <td className="px-6 py-4 text-xs font-medium text-slate-700">
                           {row.clockOut ? (
                             <div className="flex items-center gap-1.5">
                               <LogOut size={13} className="text-rose-600" />
-                              {new Date(row.clockOut).toLocaleTimeString([], {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}
+                              {formatTimeWAT(row.clockOut)}
                             </div>
                           ) : (
                             <span className="text-slate-400">--:--</span>
